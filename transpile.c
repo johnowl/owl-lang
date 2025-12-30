@@ -762,20 +762,6 @@ void owl_emit_builtin_print(OwlCodegen* cg, OwlAstId call_expr_id) {
  * ============================================================
  */
 
-static void emit_main_skeleton(OwlCodegen* cg) {
-    OwlCodeWriter* cw = &cg->writer;
-    owl_cw_write(cw, "int main(void) ");
-    owl_cw_open_block(cw);
-
-    owl_cw_write(cw, "/* TODO: emit top-level statements */");
-    owl_cw_newline(cw);
-
-    owl_cw_write(cw, "return 0;");
-    owl_cw_newline(cw);
-
-    owl_cw_close_block(cw);
-}
-
 OwlTranspileResult owl_transpile_program(const OwlParseResult* pr, const OwlTranspileOptions* opts) {
     OwlTranspileResult out;
     memset(&out, 0, sizeof(out));
