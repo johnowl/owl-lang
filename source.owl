@@ -1,0 +1,40 @@
+tuple User(name string, email string, password string)
+u1 = User("Alice", "alice@example.com", "secret")
+u2 = User(email = "alice@example.com",  name = "Alice", password = "secret")
+u2 = User(email = "alice@example.com",  name = "Alice", password = "secr\"et")
+
+sum(a int, b int)->int {
+    return a + b
+}
+
+text = "#hello world
+
+today I have this message!
+
+"
+
+n = 12 + 5 * 8 + 3
+
+if true {
+    // comment
+} else {
+    /* block
+       comment */
+}
+
+loop (n < 100) {
+    n = n - 1
+} else {
+   print("never entered the loop =/")
+}
+
+main(args [string]) {
+    print("hello world!")
+}
+
+// also works
+//
+//main(args [string])->int {
+//    print("hello world!")
+//    return 0
+//}
