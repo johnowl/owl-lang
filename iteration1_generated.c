@@ -3,6 +3,14 @@
 #include <stdio.h>
 #include "owl_rt.h"
 
+void sum() {
+    {
+        OwlString __str_tmp0 = owl_str_from_cstr("sum");
+        owl_print_string(__str_tmp0);
+        owl_str_free(&__str_tmp0);
+    }
+}
+
 int main(void) {
     int32_t a = 1;
     float b = 3.14f;
@@ -12,6 +20,7 @@ int main(void) {
     owl_print_float(b);
     owl_print_string(c);
     owl_print_bool(d);
+    sum();
     owl_str_free(&c);
     return 0;
 }

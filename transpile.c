@@ -645,8 +645,32 @@ void owl_emit_stmt_block(OwlCodegen* cg, OwlAstId block_id) {
     owl_cw_open_block(&cg->writer);
     owl_scope_push(&cg->scopes);
 
-    owl_cw_write(&cg->writer, "/* TODO block body */");
-    owl_cw_newline(&cg->writer);
+    /* Emit all statements in the block */
+    const OwlAstNode* bn = owl_ast_get_const(cg->ast, block_id);
+    if (bn && bn->kind == OWL_AST_STMT_BLOCK) {
+        for (size_t i = 0; i < bn->as.stmt_block.stmts.len; i++) {
+            OwlAstId sid = bn->as.stmt_block.stmts.items[i];
+            const OwlAstNode* sn = owl_ast_get_const(cg->ast, sid);
+            if (!sn) continue;
+            switch (sn->kind) {
+                case OWL_AST_STMT_VAR_OR_ASSIGN:
+                    owl_emit_stmt_var_or_assign(cg, sid);
+                    break;
+                case OWL_AST_STMT_EXPR:
+                    owl_emit_stmt_expr(cg, sid);
+                    break;
+                case OWL_AST_STMT_BLOCK:
+                    /* Nested block */
+                    owl_emit_stmt_block(cg, sid);
+                    break;
+                default:
+                    /* Unsupported stmt in iteration 1 */
+                    owl_cw_write(&cg->writer, "/* unsupported stmt in block */;");
+                    owl_cw_newline(&cg->writer);
+                    break;
+            }
+        }
+    }
 
     owl_scope_pop(&cg->scopes, &cg->writer);
     owl_cw_close_block(&cg->writer);
@@ -670,7 +694,35 @@ void owl_emit_stmt_expr(OwlCodegen* cg, OwlAstId stmt_id) {
         }
     }
 
-    /* For other expressions, no-op in iteration 1 */
+    /* For user-declared calls, emit actual call (built-in 'print' handled above) */
+    if (expr && expr->kind == OWL_AST_EXPR_CALL) {
+        const OwlAstNode* callee = owl_ast_get_const(cg->ast, expr->as.expr_call.callee);
+        if (callee && callee->kind == OWL_AST_EXPR_IDENTIFIER) {
+            const OwlToken* toks = (const OwlToken*)cg->tokens;
+            const OwlToken* ct = &toks[callee->as.expr_ident.name_tok];
+            /* Skip built-in print, handled earlier */
+            if (!(ct->lexeme_len == 5 && strncmp(ct->lexeme, "print", 5) == 0)) {
+                /* Emit actual call: name(arg1, arg2, ...) */
+                owl_cw_writen(&cg->writer, ct->lexeme, ct->lexeme_len);
+                owl_cw_write(&cg->writer, "(");
+                for (size_t ai = 0; ai < expr->as.expr_call.args.len; ai++) {
+                    OwlAstId arg = expr->as.expr_call.args.items[ai];
+                    OwlTypeInfo atmp;
+                    const char* atext = owl_emit_expr(cg, arg, &atmp);
+                    if (ai > 0) owl_cw_write(&cg->writer, ", ");
+                    if (atext) {
+                        owl_cw_write(&cg->writer, atext);
+                    } else {
+                        owl_cw_write(&cg->writer, "/* arg */");
+                    }
+                }
+                owl_cw_write(&cg->writer, ");");
+                owl_cw_newline(&cg->writer);
+                return;
+            }
+        }
+    }
+    /* Fallback: comment generic ignored expr stmt */
     owl_cw_write(&cg->writer, "/* expr stmt ignored */;");
     owl_cw_newline(&cg->writer);
 }
@@ -758,6 +810,94 @@ void owl_emit_builtin_print(OwlCodegen* cg, OwlAstId call_expr_id) {
 }
 
 /* ============================================================
+ * Function declaration emission
+ * ============================================================
+ */
+
+void owl_emit_func_decl(OwlCodegen* cg, OwlAstId func_id) {
+    const OwlAstNode* fn = owl_ast_get_const(cg->ast, func_id);
+    if (!fn || fn->kind != OWL_AST_FUNC_DECL) return;
+
+    const OwlToken* toks = (const OwlToken*)cg->tokens;
+    const OwlToken* name_tok = &toks[fn->as.func_decl.name_tok];
+
+    /* Emit a C function signature; iteration 1 uses void return for simplicity */
+    owl_cw_write(&cg->writer, "void ");
+    owl_cw_writen(&cg->writer, name_tok->lexeme, name_tok->lexeme_len);
+    owl_cw_write(&cg->writer, "(");
+
+    /* Emit parameters as untyped identifiers for now (iteration 1) */
+    for (size_t i = 0; i < fn->as.func_decl.param_name_toks.len; i++) {
+        OwlTokIdx ptok_idx = fn->as.func_decl.param_name_toks.items[i];
+        const OwlToken* ptok = &toks[ptok_idx];
+        if (i > 0) owl_cw_write(&cg->writer, ", ");
+        /* Map Owl parameter type to C type */
+        const char* ctype = "int /* unknown type */";
+        if (i < fn->as.func_decl.param_types.len) {
+            OwlAstId ptype_id = fn->as.func_decl.param_types.items[i];
+            const OwlAstNode* ptype = owl_ast_get_const(cg->ast, ptype_id);
+            if (ptype && ptype->kind == OWL_AST_TYPE_NAME) {
+                const OwlToken* nt = &toks[ptype->as.type_name.name_tok];
+                if (nt) {
+                    switch (nt->kind) {
+                        case OWL_TOK_KW_STRING: ctype = "OwlString"; break;
+                        case OWL_TOK_KW_INT:    ctype = "int32_t";   break;
+                        case OWL_TOK_KW_FLOAT:  ctype = "float";     break;
+                        case OWL_TOK_KW_BOOL:   ctype = "uint8_t";   break;
+                        case OWL_TOK_KW_BYTE:   ctype = "uint8_t";   break;
+                        default:                ctype = "int /* unknown type */"; break;
+                    }
+                }
+            } else if (ptype && ptype->kind == OWL_AST_TYPE_ARRAY) {
+                /* For now, map arrays to void* placeholder */
+                ctype = "void* /* array */";
+            }
+        }
+        owl_cw_write(&cg->writer, ctype);
+        owl_cw_write(&cg->writer, " ");
+        owl_cw_writen(&cg->writer, ptok->lexeme, ptok->lexeme_len);
+    }
+    owl_cw_write(&cg->writer, ") ");
+
+    /* Open function body block */
+    owl_cw_open_block(&cg->writer);
+    owl_scope_push(&cg->scopes);
+
+    /* Emit function body statements directly to avoid nested empty braces */
+    const OwlAstNode* body = owl_ast_get_const(cg->ast, fn->as.func_decl.body_block);
+    if (body && body->kind == OWL_AST_STMT_BLOCK) {
+        for (size_t i = 0; i < body->as.stmt_block.stmts.len; i++) {
+            OwlAstId sid = body->as.stmt_block.stmts.items[i];
+            const OwlAstNode* sn = owl_ast_get_const(cg->ast, sid);
+            if (!sn) continue;
+            switch (sn->kind) {
+                case OWL_AST_STMT_VAR_OR_ASSIGN:
+                    owl_emit_stmt_var_or_assign(cg, sid);
+                    break;
+                case OWL_AST_STMT_EXPR:
+                    owl_emit_stmt_expr(cg, sid);
+                    break;
+                case OWL_AST_STMT_BLOCK:
+                    /* Nested block */
+                    owl_emit_stmt_block(cg, sid);
+                    break;
+                default:
+                    /* Unsupported stmt in iteration 1 */
+                    owl_cw_write(&cg->writer, "/* unsupported stmt in function body */;");
+                    owl_cw_newline(&cg->writer);
+                    break;
+            }
+        }
+    }
+
+    /* Close scope and block */
+    owl_scope_pop(&cg->scopes, &cg->writer);
+    owl_cw_close_block(&cg->writer);
+
+    owl_cw_newline(&cg->writer);
+}
+
+/* ============================================================
  * Top-level program emission
  * ============================================================
  */
@@ -773,14 +913,26 @@ OwlTranspileResult owl_transpile_program(const OwlParseResult* pr, const OwlTran
     /* Prologue */
     owl_emit_prologue(&cg);
 
+    /* Emit all top-level function declarations before main */
+    const OwlAstNode* root = owl_ast_get_const(&pr->ast, pr->root);
+    if (root && root->kind == OWL_AST_PROGRAM) {
+        for (size_t i = 0; i < root->as.program.len; i++) {
+            OwlTopLevelItem it = root->as.program.items[i];
+            const OwlAstNode* n = owl_ast_get_const(&pr->ast, it.node);
+            if (!n) continue;
+            if (n->kind == OWL_AST_FUNC_DECL) {
+                owl_emit_func_decl(&cg, it.node);
+            }
+        }
+    }
+
     /* Emit: int main(void) { ... } */
     OwlCodeWriter* cw = &cg.writer;
     owl_cw_write(cw, "int main(void) ");
     owl_cw_open_block(cw);
     owl_scope_push(&cg.scopes);
 
-    /* Walk top-level program items and emit supported statements */
-    const OwlAstNode* root = owl_ast_get_const(&pr->ast, pr->root);
+    /* Inside main: emit supported top-level statements (excluding func decls) */
     if (root && root->kind == OWL_AST_PROGRAM) {
         for (size_t i = 0; i < root->as.program.len; i++) {
             OwlTopLevelItem it = root->as.program.items[i];
@@ -792,6 +944,9 @@ OwlTranspileResult owl_transpile_program(const OwlParseResult* pr, const OwlTran
                     break;
                 case OWL_AST_STMT_EXPR:
                     owl_emit_stmt_expr(&cg, it.node);
+                    break;
+                case OWL_AST_STMT_BLOCK:
+                    owl_emit_stmt_block(&cg, it.node);
                     break;
                 default:
                     /* ignore other top-level constructs in iteration 1 */

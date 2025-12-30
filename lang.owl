@@ -1,0 +1,15 @@
+print(message string) {
+    // implemented by the runtime
+}
+
+print(message int) {
+    // implemented by the runtime
+}
+
+print(message float) {
+    // implemented by the runtime
+}
+
+print(message bool) {
+    // implemented by the runtime
+}

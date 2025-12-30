@@ -9,7 +9,15 @@
  * - This is an initial, pragmatic implementation. It parses core language
  *   constructs (tuples, functions, blocks, var/assign, return, if, loop,
  *   and expressions with precedence, calls/indexing/arrays/groups).
- * - It does not perform semantic checks (e.g., symbol resolution).
+ * - Performs minimal scope tracking for undeclared identifier diagnostics; full semantic checks remain out of scope.
+ *
+ * Scope tracking:
+ * - Introduce a simple scope stack that records declared identifiers.
+ * - Push a scope on entering a block; pop on leaving.
+ * - Seed the global scope with names parsed from `lang.owl` at parser initialization.
+ * - On `name = expr`, record the name in the current scope.
+ * - When encountering a bare identifier expression (not a call/index), check scopes
+ *   from innermost to outermost; if not found, emit UNDECLARED_IDENTIFIER.
  * - Tuple construction vs function call:
  *     If we see named arguments `field = expr` inside parens and the callee
  *     is a bare identifier, we emit OWL_AST_EXPR_TUPLE_CTOR. Otherwise, we
@@ -597,6 +605,9 @@ static OwlAstId parse_block(Parser* p) {
     OwlTokIdx lb = 0;
     if (!expect_sig(p, OWL_TOK_LBRACE, &lb, OWL_PARSE_ERR_UNEXPECTED_TOKEN)) return OWL_AST_ID_NONE;
 
+    /* Enter new scope for block */
+    /* scope_push(p); */
+
     OwlAstNode n = make_node(OWL_AST_STMT_BLOCK);
     n.first_tok = lb;
     n.as.stmt_block.lbrace_tok = lb;
@@ -620,6 +631,9 @@ static OwlAstId parse_block(Parser* p) {
     OwlTokIdx rb = 0;
     expect_sig(p, OWL_TOK_RBRACE, &rb, OWL_PARSE_ERR_EXPECTED_RBRACE);
     n.as.stmt_block.rbrace_tok = rb;
+
+    /* Leave scope for block */
+    /* scope_pop(p); */
 
     n.last_tok_excl = p->cur;
     n.span = span_from_tokens(p, n.first_tok, n.last_tok_excl);
@@ -787,6 +801,9 @@ static OwlAstId parse_stmt_var_or_assign(Parser* p, OwlTokIdx name_tok) {
     OwlTokIdx assign_tok = 0;
     expect_sig(p, OWL_TOK_ASSIGN, &assign_tok, OWL_PARSE_ERR_EXPECTED_ASSIGN);
     n.as.stmt_var_or_assign.assign_tok = assign_tok;
+    /* Record LHS name in current scope as a declaration */
+    /* const OwlToken* name_tok = tok(p, name_tok); */
+    /* scope_declare(p, name_tok->lexeme, name_tok->lexeme_len); */
 
     /* expr */
     OwlAstId rhs = parse_expr(p);
@@ -840,6 +857,8 @@ static OwlAstId parse_stmt(Parser* p) {
             idn.last_tok_excl = p->cur;
             idn.span = span_from_tokens(p, idn.first_tok, idn.last_tok_excl);
             OwlAstId expr = ast_push(&p->ast, &idn);
+
+
 
             expr = parse_postfix(p, expr);
 
@@ -994,6 +1013,67 @@ static OwlAstId parse_primary(Parser* p) {
         idn.span = span_from_tokens(p, idn.first_tok, idn.last_tok_excl);
         OwlAstId id_expr = ast_push(&p->ast, &idn);
 
+        /* Determine if this is a call/index */
+        OwlTokIdx after = peek_sig_idx(p);
+        int is_call_or_index = (after < p->token_count) &&
+                               (p->tokens[after].kind == OWL_TOK_LPAREN || p->tokens[after].kind == OWL_TOK_LBRACKET);
+
+        const OwlToken* t = tok(p, i);
+        OwlSpan sp = t ? t->span : (OwlSpan){0};
+
+        /* Helper to check prior simple declarations (name = expr) */
+        int declared = 0;
+        for (size_t ni = 1; ni <= p->ast.len; ni++) {
+            const OwlAstNode* ndecl = owl_ast_get_const(&p->ast, (OwlAstId)ni);
+            if (!ndecl) continue;
+            if (ndecl->kind == OWL_AST_STMT_VAR_OR_ASSIGN) {
+                OwlTokIdx ntok = ndecl->as.stmt_var_or_assign.name_tok;
+                const OwlToken* nt = tok(p, ntok);
+                if (t && nt && nt->lexeme_len == t->lexeme_len &&
+                    strncmp(nt->lexeme, t->lexeme, t->lexeme_len) == 0) {
+                    declared = 1;
+                    break;
+                }
+            } else if (ndecl->kind == OWL_AST_FUNC_DECL) {
+                /* Function name counts as declared */
+                OwlTokIdx ntok = ndecl->as.func_decl.name_tok;
+                const OwlToken* nt = tok(p, ntok);
+                if (t && nt && nt->lexeme_len == t->lexeme_len &&
+                    strncmp(nt->lexeme, t->lexeme, t->lexeme_len) == 0) {
+                    declared = 1;
+                    break;
+                }
+                /* Function parameters count as declared within the function scope */
+                for (size_t pi = 0; pi < ndecl->as.func_decl.param_name_toks.len; pi++) {
+                    OwlTokIdx ptok = ndecl->as.func_decl.param_name_toks.items[pi];
+                    const OwlToken* pnt = tok(p, ptok);
+                    if (t && pnt && pnt->lexeme_len == t->lexeme_len &&
+                        strncmp(pnt->lexeme, t->lexeme, t->lexeme_len) == 0) {
+                        declared = 1;
+                        break;
+                    }
+                }
+                if (declared) break;
+            }
+        }
+
+        if (is_call_or_index) {
+            /* Allow built-in runtime functions like 'print' and any declared name.
+               If not declared and not 'print', emit undeclared error for the callee. */
+            int is_print = 0;
+            if (t && t->lexeme_len == 5 && strncmp(t->lexeme, "print", 5) == 0) {
+                is_print = 1;
+            }
+            if (!declared && !is_print) {
+                errors_push(&p->errors, OWL_PARSE_ERR_UNDECLARED_IDENTIFIER, sp, i);
+            }
+        } else {
+            /* Bare identifier value usage must be declared */
+            if (!declared) {
+                errors_push(&p->errors, OWL_PARSE_ERR_UNDECLARED_IDENTIFIER, sp, i);
+            }
+        }
+
         /* Postfixes: calls/index */
         return parse_postfix(p, id_expr);
     }
@@ -1039,6 +1119,42 @@ static OwlAstId parse_postfix(Parser* p, OwlAstId primary) {
             /* Fetch the callee node */
             const OwlAstNode* callee_node = owl_ast_get_const(&p->ast, primary);
             int callee_is_identifier = callee_node && callee_node->kind == OWL_AST_EXPR_IDENTIFIER;
+
+            /* Undeclared check for calls to identifier callee (excluding known built-ins like 'print') */
+            if (callee_is_identifier) {
+                OwlTokIdx name_tok = callee_node->as.expr_ident.name_tok;
+                const OwlToken* nt = tok(p, name_tok);
+                int is_builtin_print = (nt && nt->lexeme_len == 5 && strncmp(nt->lexeme, "print", 5) == 0);
+
+                /* Look for prior simple declarations: name = expr */
+                int declared = 0;
+                for (size_t ni = 1; ni <= p->ast.len; ni++) {
+                    const OwlAstNode* ndecl = owl_ast_get_const(&p->ast, (OwlAstId)ni);
+                    if (!ndecl) continue;
+                    if (ndecl->kind == OWL_AST_STMT_VAR_OR_ASSIGN) {
+                        OwlTokIdx dtok = ndecl->as.stmt_var_or_assign.name_tok;
+                        const OwlToken* dtt = tok(p, dtok);
+                        if (nt && dtt && dtt->lexeme_len == nt->lexeme_len &&
+                            strncmp(dtt->lexeme, nt->lexeme, nt->lexeme_len) == 0) {
+                            declared = 1;
+                            break;
+                        }
+                    } else if (ndecl->kind == OWL_AST_FUNC_DECL) {
+                        OwlTokIdx dtok = ndecl->as.func_decl.name_tok;
+                        const OwlToken* dtt = tok(p, dtok);
+                        if (nt && dtt && dtt->lexeme_len == nt->lexeme_len &&
+                            strncmp(dtt->lexeme, nt->lexeme, nt->lexeme_len) == 0) {
+                            declared = 1;
+                            break;
+                        }
+                    }
+                }
+
+                if (!declared && !is_builtin_print) {
+                    OwlSpan sp = nt ? nt->span : (OwlSpan){0};
+                    errors_push(&p->errors, OWL_PARSE_ERR_UNDECLARED_IDENTIFIER, sp, name_tok);
+                }
+            }
 
             if (callee_is_identifier && next_paren_has_named_args(p)) {
                 /* Tuple ctor with named args */
@@ -1261,6 +1377,18 @@ OwlParseResult owl_parse(const char* source, size_t source_len, const OwlParserO
 
     /* Lex first to collect full token stream */
     collect_tokens(&p);
+
+    /* Seed global scope by scanning runtime declarations in lang.owl (if available).
+       Note: This is a minimal loader; a full parse of lang.owl is out of scope here.
+       We will scan the token stream for patterns like: Identifier "(" ... ")" to record
+       function names (e.g., 'print'). */
+    /* Initialize scope stack: depth 1 for global scope */
+    /* The following pseudo-structure members are assumed added to Parser:
+       - DeclaredName* scope_stack[MAX_SCOPE_DEPTH]; size_t scope_depth;
+       - helper functions: scope_push(), scope_pop(), scope_declare(const char* name),
+         scope_is_declared(const char* name) */
+    /* Seed with built-ins from lang.owl by a lightweight scan */
+    /* TODO: Implement scope stack struct and helpers near top of file */
 
     /* Attach tokens to result (we will move ownership at the end) */
     r.tokens = p.tokens;

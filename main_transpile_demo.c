@@ -107,6 +107,7 @@ static const char* parse_error_code_name(OwlParseErrorCode c) {
         case OWL_PARSE_ERR_EXPECTED_RPAREN: return "EXPECTED_RPAREN";
         case OWL_PARSE_ERR_EXPECTED_RBRACE: return "EXPECTED_RBRACE";
         case OWL_PARSE_ERR_EXPECTED_RBRACKET: return "EXPECTED_RBRACKET";
+        case OWL_PARSE_ERR_UNDECLARED_IDENTIFIER: return "UNDECLARED_IDENTIFIER";
         case OWL_PARSE_ERR_EXPECTED_ASSIGN: return "EXPECTED_ASSIGN";
         case OWL_PARSE_ERR_EXPECTED_SEMICOLON: return "EXPECTED_SEMICOLON";
         case OWL_PARSE_ERR_MIXED_TUPLE_ARGS: return "MIXED_TUPLE_ARGS";
@@ -124,6 +125,43 @@ static void print_parse_diagnostics(const OwlParseResult* r) {
                 parse_error_code_name(e->code),
                 e->span.start.line, e->span.start.column,
                 (unsigned)e->at_token);
+
+        /* Print source snippet and caret under the offending column */
+        if (r->source && r->source_len > 0) {
+            size_t target_line = (size_t)e->span.start.line;
+            size_t cur_line = 1;
+            const char* src = r->source;
+            const char* src_end = r->source + r->source_len;
+            const char* line_start = src;
+
+            /* Find start of the target line */
+            for (const char* p = src; p < src_end && cur_line < target_line; p++) {
+                if (*p == '\n') {
+                    cur_line++;
+                    line_start = p + 1;
+                }
+            }
+
+            /* Find end of the target line */
+            const char* line_end = line_start;
+            while (line_end < src_end && *line_end != '\n') {
+                line_end++;
+            }
+
+            size_t line_len = (size_t)(line_end - line_start);
+            fprintf(stderr, "    Code:\n       ");
+            fwrite(line_start, 1, line_len, stderr);
+            fputc('\n', stderr);
+
+            /* Caret line: 7 spaces (matching '       '), then column-1 spaces, then '^' */
+            size_t col = (size_t)e->span.start.column;
+            fprintf(stderr, "       ");
+            if (col > 1) {
+                for (size_t c = 1; c < col; c++) fputc(' ', stderr);
+            }
+            fputc('^', stderr);
+            fputc('\n', stderr);
+        }
     }
 }
 

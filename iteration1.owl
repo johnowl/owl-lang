@@ -3,8 +3,17 @@ b = 3.14
 c = "hello world"
 d = true
 
+sum() {
+    print("sum")
+}
+
+my_print(message string) {
+    print(message)
+}
+
 print(a)
 print(b)
 print(c)
 print(d)
-print(e)
+
+sum()

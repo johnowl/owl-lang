@@ -378,6 +378,7 @@ typedef enum {
     OWL_PARSE_ERR_EXPECTED_ASSIGN,
     OWL_PARSE_ERR_EXPECTED_SEMICOLON,
     OWL_PARSE_ERR_MIXED_TUPLE_ARGS,          /* mixing positional and named in tuple ctor */
+    OWL_PARSE_ERR_UNDECLARED_IDENTIFIER,
     OWL_PARSE_ERR_UNKNOWN
 } OwlParseErrorCode;
 
